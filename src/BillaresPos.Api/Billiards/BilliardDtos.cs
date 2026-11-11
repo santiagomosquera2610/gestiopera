@@ -23,6 +23,8 @@ public sealed record BilliardTableResponse(
 
 public sealed record AddBilliardConsumptionRequest(Guid ProductId, decimal Quantity);
 
+public sealed record UpdateBilliardConsumptionRequest(decimal Quantity);
+
 public sealed record CloseBilliardSessionRequest(IReadOnlyList<CreateSalePaymentRequest> Payments, string? CustomerName);
 
 public sealed record BilliardSessionResponse(

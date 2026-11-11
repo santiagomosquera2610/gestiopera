@@ -48,6 +48,8 @@ export const resumeTable = (id: string) => request<void>(`/api/billiards/tables/
 
 export const addConsumption = (sessionId: string, productId: string, quantity: number) => request<string>(`/api/billiards/sessions/${sessionId}/consumptions`, { method: 'POST', body: JSON.stringify({ productId, quantity }) })
 
+export const updateConsumption = (sessionId: string, consumptionId: string, quantity: number) => request<void>(`/api/billiards/sessions/${sessionId}/consumptions/${consumptionId}`, { method: 'PATCH', body: JSON.stringify({ quantity }) })
+
 export const deleteConsumption = (sessionId: string, consumptionId: string) => request<void>(`/api/billiards/sessions/${sessionId}/consumptions/${consumptionId}`, { method: 'DELETE' })
 
 

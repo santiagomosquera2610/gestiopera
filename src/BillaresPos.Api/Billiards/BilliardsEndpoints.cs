@@ -1,5 +1,6 @@
 using BillaresPos.Api.Auth;
 using BillaresPos.Api.Errors;
+using BillaresPos.Application.Common;
 using BillaresPos.Application.Common.Abstractions;
 using BillaresPos.Application.Common.Exceptions;
 using BillaresPos.Domain.Billiards;
@@ -29,6 +30,7 @@ public static class BilliardsEndpoints
         group.MapPost("/tables/{tableId:guid}/pause", PauseAsync);
         group.MapPost("/tables/{tableId:guid}/resume", ResumeAsync);
         group.MapPost("/sessions/{sessionId:guid}/consumptions", AddConsumptionAsync);
+        group.MapPatch("/sessions/{sessionId:guid}/consumptions/{consumptionId:guid}", UpdateConsumptionAsync);
         group.MapDelete("/sessions/{sessionId:guid}/consumptions/{consumptionId:guid}", DeleteConsumptionAsync);
         group.MapPost("/sessions/{sessionId:guid}/close", CloseAsync);
     }
@@ -201,6 +203,17 @@ public static class BilliardsEndpoints
             x => x.Id == request.ProductId && x.IsActive, ct);
         if (product is null) throw new NotFoundException("No se encontró el producto.");
 
+        var existing = await db.BilliardConsumptions.FirstOrDefaultAsync(
+            x => x.BilliardSessionId == session.Id && x.ProductId == product.Id && x.UnitPrice == product.SalePrice, ct);
+        await EnsureStockAsync(db, session.Id, product, request.Quantity, ct);
+        if (existing is not null)
+        {
+            existing.Quantity += request.Quantity;
+            existing.Subtotal = decimal.Round(existing.Quantity * existing.UnitPrice, 2);
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(existing.Id);
+        }
+
         var consumption = new BilliardConsumption
         {
             Id = Guid.NewGuid(), TenantId = tenant.TenantId.Value,
@@ -213,6 +226,41 @@ public static class BilliardsEndpoints
         db.BilliardConsumptions.Add(consumption);
         await db.SaveChangesAsync(ct);
         return Results.Created($"/api/billiards/sessions/{session.Id}/consumptions/{consumption.Id}", consumption.Id);
+    }
+
+    private static async Task<IResult> UpdateConsumptionAsync(
+        Guid sessionId, Guid consumptionId, UpdateBilliardConsumptionRequest request, AppDbContext db,
+        ICurrentTenant tenant, CancellationToken ct)
+    {
+        if (tenant.TenantId is null || request.Quantity <= 0 || decimal.Truncate(request.Quantity) != request.Quantity)
+            throw new ValidationAppException("Consumo de billar no válido.",
+                new Dictionary<string, string[]> { ["quantity"] = ["La cantidad debe ser un número entero positivo."] });
+        var consumption = await db.BilliardConsumptions
+            .FirstOrDefaultAsync(x => x.Id == consumptionId && x.BilliardSessionId == sessionId && x.BilliardSession.Status == BilliardSessionStatus.Active, ct);
+        if (consumption is null)
+            throw new NotFoundException("No se encontró el consumo en la sesión activa.");
+        var product = await db.Products.FirstOrDefaultAsync(x => x.Id == consumption.ProductId, ct);
+        if (product is null) throw new NotFoundException("No se encontró el producto.");
+
+        var increase = request.Quantity - consumption.Quantity;
+        if (increase > 0) await EnsureStockAsync(db, sessionId, product, increase, ct);
+        consumption.Quantity = request.Quantity;
+        consumption.Subtotal = decimal.Round(request.Quantity * consumption.UnitPrice, 2);
+        await db.SaveChangesAsync(ct);
+        return Results.NoContent();
+    }
+
+    private static async Task EnsureStockAsync(AppDbContext db, Guid sessionId, Domain.Products.Product product, decimal additionalQuantity, CancellationToken ct)
+    {
+        var alreadyInSession = await db.BilliardConsumptions
+            .Where(x => x.BilliardSessionId == sessionId && x.ProductId == product.Id)
+            .SumAsync(x => (decimal?)x.Quantity, ct) ?? 0;
+        if (alreadyInSession + additionalQuantity > product.CurrentStock)
+        {
+            var left = Math.Max(0, product.CurrentStock - alreadyInSession);
+            throw new ValidationAppException("Inventario insuficiente.",
+                new Dictionary<string, string[]> { ["quantity"] = [$"Solo quedan {ColombianFormat.Number(left)} unidades disponibles de {product.Name}."] });
+        }
     }
 
     private static async Task<IResult> DeleteConsumptionAsync(

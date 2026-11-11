@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
-import { Pause, Play, RotateCcw, Square, Plus, X, Trash2 } from 'lucide-react'
+import { Pause, Play, RotateCcw, Square, Plus, Minus, X, Trash2 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import AppLayout from '../components/AppLayout'
-import { addConsumption, closeSession, deleteConsumption, downloadSaleReceipt, getProducts, getSession, getTables, pauseTable, resumeTable, startTable } from '../api'
+import { addConsumption, closeSession, deleteConsumption, downloadSaleReceipt, updateConsumption, getProducts, getSession, getTables, pauseTable, resumeTable, startTable } from '../api'
 import { useAuthStore } from '../authStore'
 import type { Product, SessionDetail, SessionResult, Table } from '../types'
 import { EmptyState, Feedback, SectionHeading } from '../components/ui'
@@ -89,6 +89,7 @@ function SessionPanel({ table, detail, products, onClose, onClosed, onChanged }:
   const [error, setError] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [closing, setClosing] = useState(false)
+  const [busyLine, setBusyLine] = useState<string | null>(null)
   const available = products.filter((product) => product.isActive && product.currentStock > 0)
   const isBar = table.kind === 'Regular'
   const received = Number(amount)
@@ -104,6 +105,12 @@ function SessionPanel({ table, detail, products, onClose, onClosed, onChanged }:
     try { await addConsumption(detail.sessionId, productId, Number(quantity)); setQuantity('1'); onChanged() }
     catch (err) { setError(err instanceof Error ? err.message : 'No se pudo agregar el consumo') }
   }
+  async function changeQuantity(consumptionId: string, quantity: number) {
+    setError(''); setBusyLine(consumptionId)
+    try { await updateConsumption(detail.sessionId, consumptionId, quantity); onChanged() }
+    catch (err) { setError(err instanceof Error ? err.message : 'No se pudo cambiar la cantidad') }
+    finally { setBusyLine(null) }
+  }
   async function remove(consumptionId: string) {
     setError('')
     try { await deleteConsumption(detail.sessionId, consumptionId); onChanged() }
@@ -117,10 +124,20 @@ function SessionPanel({ table, detail, products, onClose, onClosed, onChanged }:
   }
   return <div className="modal-backdrop"><section className="modal session-modal">
     <SectionHeading eyebrow={isBar ? 'CUENTA ABIERTA' : 'SESIÓN ACTIVA'} title={table.name} action={<button className="modal-close" onClick={onClose} title="Cerrar ventana (Esc)" aria-label="Cerrar ventana" disabled={closing}><X size={20} strokeWidth={2.5} /></button>} />
+    <div className="session-body">
     <div className={isBar ? 'session-summary three' : 'session-summary'}><div><span className="muted">{isBar ? 'Abierta' : 'Inicio'}</span><strong>{formatClock(detail.startedAtUtc)}</strong></div>{!isBar && <div><span className="muted">Tiempo</span><strong>{formatTime(detail.elapsedSeconds)}</strong></div>}{isBar ? <div><span className="muted">Consumo</span><strong>{formatMoney(detail.consumptionTotal)}</strong></div> : <div><span className="muted">Mesa</span><strong>{formatMoney(detail.billiardCharge)}</strong></div>}<div><span className="muted">Total</span><strong>{formatMoney(detail.total)}</strong></div></div>
     <div className="consumption-header"><h3>Consumos</h3><span className="muted">{formatMoney(detail.consumptionTotal)}</span></div>
-    {detail.consumptions.length === 0 ? <p className="muted">Todavía no hay productos agregados.</p> : <div className="consumption-list">{detail.consumptions.map((item) => <div className="consumption-line" key={item.id}><span>{item.quantity} x {item.descriptionSnapshot}</span><span className="consumption-actions"><strong>{formatMoney(item.subtotal)}</strong>{!confirming && <button className="icon-button danger-icon" title="Eliminar consumo" onClick={() => void remove(item.id)}><Trash2 size={16} /></button>}</span></div>)}</div>}
+    {detail.consumptions.length === 0 ? <p className="muted">Todavía no hay productos agregados.</p> : <div className="consumption-list">{detail.consumptions.map((item) => <div className="consumption-line" key={item.id}>
+      <div className="consumption-name"><span>{item.descriptionSnapshot}</span><small className="muted">{formatMoney(item.unitPrice)} c/u</small></div>
+      <span className="consumption-actions">
+        {confirming ? <span className="quantity-readonly">x {item.quantity}</span> : <span className="quantity-stepper"><button title="Quitar una unidad" aria-label={`Quitar una unidad de ${item.descriptionSnapshot}`} disabled={item.quantity <= 1 || busyLine === item.id} onClick={() => void changeQuantity(item.id, item.quantity - 1)}><Minus size={14} /></button><span aria-live="polite">{item.quantity}</span><button title="Agregar una unidad" aria-label={`Agregar una unidad de ${item.descriptionSnapshot}`} disabled={busyLine === item.id} onClick={() => void changeQuantity(item.id, item.quantity + 1)}><Plus size={14} /></button></span>}
+        <strong className="consumption-subtotal">{formatMoney(item.subtotal)}</strong>
+        {!confirming && <button className="icon-button danger-icon" title="Quitar producto de la cuenta" onClick={() => void remove(item.id)}><Trash2 size={16} /></button>}
+      </span>
+    </div>)}</div>}
     {!confirming && <div className="add-consumption"><select value={productId} onChange={(e) => setProductId(e.target.value)}><option value="">Selecciona un producto</option>{available.map((product) => <option key={product.id} value={product.id}>{product.name} - {formatMoney(product.salePrice)} - stock {product.currentStock}</option>)}</select><input type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} /><button className="primary-button" disabled={!productId} onClick={() => void add()}><Plus size={16} />Agregar</button></div>}
+    {error && <div className="error-box">{error}</div>}
+    </div>
     {!confirming ? <div className="close-section"><label>Nombre para la venta o factura<input value={customerName} maxLength={160} placeholder="Opcional" onChange={(e) => setCustomerName(e.target.value)} /></label><label>Total recibido (COP)<input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} /></label><button className="danger-button" disabled={isBar && detail.consumptions.length === 0} onClick={() => { setError(''); setConfirming(true) }}>{isBar ? 'Cerrar cuenta y cobrar' : 'Cerrar mesa y cobrar'}</button></div>
       : <div className="close-confirm" role="alertdialog" aria-labelledby="close-confirm-title">
         <p className="eyebrow">CONFIRMAR COBRO</p>
@@ -135,7 +152,6 @@ function SessionPanel({ table, detail, products, onClose, onClosed, onChanged }:
         <p className="muted">Se registrará la venta y se descontará el inventario. Esta acción no se puede deshacer.</p>
         <div className="modal-actions"><button className="secondary-button" disabled={closing} onClick={() => setConfirming(false)}>Volver</button><button className="danger-solid" disabled={closing || !amountMatches} onClick={() => void close()}>{closing ? 'Cobrando...' : 'Sí, cerrar y cobrar'}</button></div>
       </div>}
-    {error && <div className="error-box">{error}</div>}
   </section></div>
 }
 
